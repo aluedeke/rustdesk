@@ -956,9 +956,15 @@ fn no_displays(displays: &Vec<Display>) -> bool {
 }
 
 #[inline]
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn try_get_displays() -> ResultType<Vec<Display>> {
     Ok(Display::all()?)
+}
+
+#[inline]
+#[cfg(target_os = "macos")]
+pub fn try_get_displays() -> ResultType<Vec<Display>> {
+    crate::platform::macos_headless::try_get_displays()
 }
 
 #[inline]
