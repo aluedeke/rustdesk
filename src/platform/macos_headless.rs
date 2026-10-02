@@ -7,8 +7,9 @@
 //! DeskPad use) and remove it again once a real display appears or the last remote
 //! session ends.
 //!
-//! The display lives as long as the `CGVirtualDisplay` object, so it is created and
-//! owned by the `--server` process.
+//! The display lives as long as the `CGVirtualDisplay` object, so it is only created
+//! by a process that is serving a remote session: usually `--server`, but the main
+//! process hosts the server itself when the LaunchAgent is not running.
 
 use hbb_common::{bail, log, ResultType};
 use objc::{
@@ -46,7 +47,15 @@ extern "C" {
     fn CGGetOnlineDisplayList(max: u32, displays: *mut u32, count: *mut u32) -> i32;
     fn CGDisplayIsBuiltin(display: u32) -> i32;
     fn CGDisplayIsActive(display: u32) -> i32;
+    fn CGDisplayPixelsWide(display: u32) -> usize;
+    fn CGBeginDisplayConfiguration(config: *mut *mut c_void) -> i32;
+    fn CGConfigureDisplayOrigin(config: *mut c_void, display: u32, x: i32, y: i32) -> i32;
+    fn CGCompleteDisplayConfiguration(config: *mut c_void, option: u32) -> i32;
+    fn CGCancelDisplayConfiguration(config: *mut c_void) -> i32;
 }
+
+// Reverted by macOS when the configuring process exits.
+const CG_CONFIGURE_FOR_APP_ONLY: u32 = 0;
 
 #[link(name = "IOKit", kind = "framework")]
 extern "C" {
@@ -69,7 +78,7 @@ extern "C" {
 pub fn try_get_displays() -> ResultType<Vec<Display>> {
     let lid_closed = is_lid_closed();
     let usable = usable_display_count(lid_closed);
-    if usable == 0 && crate::is_server() && !is_plugged_in() {
+    if usable == 0 && has_remote_session() && !is_plugged_in() {
         log::info!("no usable display (lid closed: {}), plug in headless display", lid_closed);
         if let Err(e) = plug_in() {
             log::error!("plug in headless display failed: {}", e);
@@ -79,10 +88,15 @@ pub fn try_get_displays() -> ResultType<Vec<Display>> {
         plug_out();
     }
 
+    capturable_displays()
+}
+
+/// `Display::all()` without the built-in panel while the lid is closed: it stays "online"
+/// but shows nothing, so it must never be picked when something else can be captured.
+/// The video service indexes into this list, so it has to match `try_get_displays()`.
+pub fn capturable_displays() -> ResultType<Vec<Display>> {
     let mut displays = Display::all()?;
-    // With the lid closed the built-in panel stays "online" but shows nothing. Leave it
-    // out whenever there is something else to capture, so it is never picked first.
-    if lid_closed && displays.len() > 1 {
+    if displays.len() > 1 && is_lid_closed() {
         displays.retain(|d| {
             d.name()
                 .parse::<u32>()
@@ -102,6 +116,15 @@ pub fn plug_out() {
         let _: () = msg_send![object, release];
     }
     log::info!("headless display {} removed", vd.display_id);
+}
+
+fn has_remote_session() -> bool {
+    use crate::server::{AuthConnType, AUTHED_CONNS};
+    AUTHED_CONNS
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|c| c.conn_type == AuthConnType::Remote)
 }
 
 fn is_plugged_in() -> bool {
@@ -214,5 +237,49 @@ fn plug_in() -> ResultType<()> {
         display_id,
     });
     log::info!("headless display {} plugged in ({}x{})", display_id, WIDTH, HEIGHT);
+    make_main_display(display_id);
     Ok(())
+}
+
+/// macOS draws the lock screen and login window controls (clock, password field) only on
+/// the main display, which stays the sleeping built-in panel when the lid is closed. Put
+/// the virtual display at (0, 0) so it becomes the main display.
+fn make_main_display(display_id: u32) {
+    for _ in 0..20 {
+        if online_display_ids().contains(&display_id) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let others: Vec<u32> = online_display_ids()
+        .into_iter()
+        .filter(|&id| id != display_id)
+        .collect();
+    unsafe {
+        let mut config = std::ptr::null_mut();
+        if CGBeginDisplayConfiguration(&mut config) != 0 {
+            log::error!("CGBeginDisplayConfiguration failed");
+            return;
+        }
+        let mut err = CGConfigureDisplayOrigin(config, display_id, 0, 0);
+        let mut x = WIDTH as i32;
+        for id in others {
+            if err != 0 {
+                break;
+            }
+            err = CGConfigureDisplayOrigin(config, id, x, 0);
+            x += CGDisplayPixelsWide(id) as i32;
+        }
+        if err != 0 {
+            CGCancelDisplayConfiguration(config);
+            log::error!("configure display origin failed: {}", err);
+            return;
+        }
+        let err = CGCompleteDisplayConfiguration(config, CG_CONFIGURE_FOR_APP_ONLY);
+        if err != 0 {
+            log::error!("make headless display {} main failed: {}", display_id, err);
+        } else {
+            log::info!("headless display {} is now the main display", display_id);
+        }
+    }
 }

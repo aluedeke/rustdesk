@@ -458,7 +458,10 @@ fn get_capturer_monitor(
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     let mut displays = Display::all()?;
+    #[cfg(target_os = "macos")]
+    let mut displays = crate::platform::macos_headless::capturable_displays()?;
     let ndisplay = displays.len();
     if ndisplay <= current {
         bail!(
