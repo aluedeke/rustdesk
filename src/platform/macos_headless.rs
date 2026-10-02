@@ -18,7 +18,14 @@ use objc::{
     sel, sel_impl,
 };
 use scrap::Display;
-use std::{ffi::c_void, sync::Mutex};
+use std::{
+    ffi::c_void,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
+    time::Duration,
+};
 
 const WIDTH: u32 = 1920;
 const HEIGHT: u32 = 1080;
@@ -34,6 +41,8 @@ struct VirtualDisplay {
 }
 
 static VIRTUAL_DISPLAY: Mutex<Option<VirtualDisplay>> = Mutex::new(None);
+static PLUG_OUT_GENERATION: AtomicU64 = AtomicU64::new(0);
+const LINGER: Duration = Duration::from_secs(10 * 60);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -106,8 +115,21 @@ pub fn capturable_displays() -> ResultType<Vec<Display>> {
     Ok(displays)
 }
 
-/// Removes the headless display, if any. Called when the last remote session ends.
-pub fn plug_out() {
+/// Called when the last remote session ends. Keeps the headless display for a while:
+/// the iOS client drops the connection whenever it goes to the background, and removing
+/// the only display makes macOS lock the screen, so every app switch would end at the lock
+/// screen. A real display showing up still removes it right away (`try_get_displays`).
+pub fn plug_out_later() {
+    let generation = PLUG_OUT_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    std::thread::spawn(move || {
+        std::thread::sleep(LINGER);
+        if PLUG_OUT_GENERATION.load(Ordering::SeqCst) == generation && !has_remote_session() {
+            plug_out();
+        }
+    });
+}
+
+fn plug_out() {
     let Some(vd) = VIRTUAL_DISPLAY.lock().unwrap().take() else {
         return;
     };

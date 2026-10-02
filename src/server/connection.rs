@@ -7002,7 +7002,7 @@ mod raii {
                 #[cfg(windows)]
                 let _ = virtual_display_manager::reset_all();
                 #[cfg(target_os = "macos")]
-                crate::platform::macos_headless::plug_out();
+                crate::platform::macos_headless::plug_out_later();
                 #[cfg(target_os = "linux")]
                 scrap::wayland::pipewire::try_close_session();
             }
