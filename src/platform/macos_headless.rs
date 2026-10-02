@@ -56,11 +56,11 @@ extern "C" {
     fn CGGetOnlineDisplayList(max: u32, displays: *mut u32, count: *mut u32) -> i32;
     fn CGDisplayIsBuiltin(display: u32) -> i32;
     fn CGDisplayIsActive(display: u32) -> i32;
-    fn CGDisplayPixelsWide(display: u32) -> usize;
     fn CGBeginDisplayConfiguration(config: *mut *mut c_void) -> i32;
     fn CGConfigureDisplayOrigin(config: *mut c_void, display: u32, x: i32, y: i32) -> i32;
     fn CGCompleteDisplayConfiguration(config: *mut c_void, option: u32) -> i32;
     fn CGCancelDisplayConfiguration(config: *mut c_void) -> i32;
+    fn CGConfigureDisplayMirrorOfDisplay(config: *mut c_void, display: u32, master: u32) -> i32;
 }
 
 // Reverted by macOS when the configuring process exits.
@@ -265,7 +265,8 @@ fn plug_in() -> ResultType<()> {
 
 /// macOS draws the lock screen and login window controls (clock, password field) only on
 /// the main display, which stays the sleeping built-in panel when the lid is closed. Put
-/// the virtual display at (0, 0) so it becomes the main display.
+/// the virtual display at (0, 0) so it becomes the main display, and mirror the remaining
+/// (unusable) displays onto it so no window is left on a screen the peer cannot see.
 fn make_main_display(display_id: u32) {
     for _ in 0..20 {
         if online_display_ids().contains(&display_id) {
@@ -284,13 +285,11 @@ fn make_main_display(display_id: u32) {
             return;
         }
         let mut err = CGConfigureDisplayOrigin(config, display_id, 0, 0);
-        let mut x = WIDTH as i32;
         for id in others {
             if err != 0 {
                 break;
             }
-            err = CGConfigureDisplayOrigin(config, id, x, 0);
-            x += CGDisplayPixelsWide(id) as i32;
+            err = CGConfigureDisplayMirrorOfDisplay(config, id, display_id);
         }
         if err != 0 {
             CGCancelDisplayConfiguration(config);
