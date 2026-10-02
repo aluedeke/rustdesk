@@ -184,9 +184,7 @@ fn active_uid_strict() -> Option<u32> {
     // Ask configd for the console user first: `/dev/console` can stay owned by root while
     // a user is logged in on recent macOS, which made every user `--server` look foreign.
     // Fall back to the filesystem metadata if configd has no answer.
-    crate::platform::macos::console_user()
-        .map(|(_, uid)| uid)
-        .or_else(console_owner_uid)
+    crate::platform::macos::console_uid().or_else(console_owner_uid)
 }
 
 #[cfg(target_os = "linux")]

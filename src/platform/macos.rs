@@ -653,13 +653,12 @@ extern "C" {
     ) -> CFStringRef;
 }
 
-/// The user owning the GUI console, as reported by configd.
+/// The uid of the user owning the GUI console, as reported by configd; 0 at the login window.
 ///
-/// `/dev/console` ownership is not reliable on recent macOS releases (it can stay
-/// `root` while a user is logged in and active), which made the root service reject
-/// the user's `--server` process. `SCDynamicStoreCopyConsoleUser` is the documented
-/// way to get the console user. Returns `("root", 0)` at the login window.
-pub(crate) fn console_user() -> Option<(String, u32)> {
+/// `/dev/console` ownership is not reliable on recent macOS releases (it can stay `root`
+/// while a user is logged in and active), which made the root service reject the user's
+/// `--server` process on the protected `_service` IPC channel.
+pub(crate) fn console_uid() -> Option<u32> {
     let mut uid: hbb_common::libc::uid_t = 0;
     let mut gid: hbb_common::libc::gid_t = 0;
     let name = unsafe { SCDynamicStoreCopyConsoleUser(std::ptr::null(), &mut uid, &mut gid) };
@@ -668,15 +667,12 @@ pub(crate) fn console_user() -> Option<(String, u32)> {
     }
     let name = unsafe { CFString::wrap_under_create_rule(name) }.to_string();
     if name.is_empty() || name == "loginwindow" {
-        return Some(("root".to_owned(), 0));
+        return Some(0);
     }
-    Some((name, uid as u32))
+    Some(uid as u32)
 }
 
 fn get_active_user(t: &str) -> String {
-    if let Some((name, uid)) = console_user() {
-        return if t == "-n" { uid.to_string() } else { name };
-    }
     if let Ok(output) = std::process::Command::new("ls")
         .args(vec![t, "/dev/console"])
         .output()
